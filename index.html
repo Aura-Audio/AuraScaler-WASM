@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MicScaler - 20-Engine Data Array (Wasm v2.0)</title>
+    <style>
+        :root {
+            --bg: #121212; --surface: #1e1e1e; --primary: #bb86fc;
+            --danger: #cf6679; --info: #03dac6; --warn: #ffb300; --record: #ff1744; --aura: #00e5ff;
+            --bp: #aeea00; --text: #e0e0e0; --border: #333; --led-off: #333; --led-on: #0cf50c;
+        }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: var(--bg); color: var(--text); margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; }
+        .header { text-align: center; margin-bottom: 10px; width: 100%; max-width: 800px; }
+        .canvas-row { display: flex; flex-wrap: wrap; gap: 15px; width: 100%; max-width: 1400px; justify-content: center; margin-bottom: 15px; }
+        .canvas-container { flex: 1 1 300px; display: flex; flex-direction: column; width: 100%; max-width: 600px; }
+        .canvas-label { font-size: 0.85em; color: var(--info); margin-bottom: 5px; font-weight: bold; text-align: center; text-transform: uppercase; letter-spacing: 1px; }
+        #master-canvas, #fft-canvas { width: 100%; height: 100px; background: #000; border-radius: 8px; border: 1px solid var(--border); box-shadow: inset 0 0 10px rgba(0,0,0,0.8); }
+        .controls { background: var(--surface); padding: 15px 20px; border-radius: 8px; border: 1px solid var(--border); margin-bottom: 10px; display: flex; flex-wrap: wrap; gap: 15px; align-items: center; justify-content: center; max-width: 1400px; width: 100%; box-sizing: border-box; }
+        .control-group { display: flex; align-items: center; gap: 10px; }
+        .divider { border-left: 1px solid #444; padding-left: 15px; }
+        button { background-color: var(--primary); color: #000; border: none; padding: 8px 15px; border-radius: 4px; font-weight: bold; cursor: pointer; transition: 0.2s; }
+        button:hover { opacity: 0.8; }
+        button.active { background-color: var(--danger); }
+        button.record-active { background-color: var(--record); color: white; animation: pulse 1.5s infinite; }
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.6; } 100% { opacity: 1; } }
+        .ui-num { padding: 4px; background: #333; color: white; border: 1px solid #555; border-radius: 4px; }
+        select.ui-num { cursor: pointer; }
+        .dash-header-row { width: 100%; max-width: 1600px; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; margin-bottom: 10px; padding: 0 10px; box-sizing: border-box; gap: 10px; }
+        .dash-header-controls { display: flex; flex-wrap: wrap; gap: 15px; align-items: center; background: var(--surface); padding: 10px 15px; border-radius: 8px; border: 1px solid var(--border); }
+        #instances-container { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 15px; width: 100%; max-width: 1600px; margin-bottom: 10px; }
+        .instance-card { background: var(--surface); border: 2px solid var(--border); border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 8px; transition: border-color 0.3s; }
+        .instance-card.active-card { border-color: var(--primary); }
+        .instance-header { display: flex; justify-content: space-between; align-items: center; font-size: 1.1em; font-weight: bold; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+        .led-indicator { width: 12px; height: 12px; border-radius: 50%; background-color: var(--led-off); box-shadow: 0 0 5px #000; transition: background-color 0.1s; }
+        .led-indicator.on { background-color: var(--led-on); box-shadow: 0 0 10px var(--led-on); }
+        .instance-row { display: flex; justify-content: space-between; align-items: center; font-size: 0.9em; }
+        .readout { background: #000; color: var(--info); font-family: monospace; padding: 4px 8px; border-radius: 4px; font-size: 1em; width: 70px; text-align: right; border: 1px solid #444; }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <h1>MicScaler <span style="font-size: 0.5em; color: var(--info);">(Wasm 20-Engine Array)</span></h1>
+        <p>Mathematical Multiplicative Scaling Engine</p>
+    </div>
+
+    <div class="canvas-row">
+        <div class="canvas-container">
+            <div class="canvas-label">Oscilloscope (Time Domain Output)</div>
+            <canvas id="master-canvas"></canvas>
+        </div>
+        <div class="canvas-container">
+            <div class="canvas-label">FFT Spectral Dist. <span style="color:#aaa; font-weight:normal;">(Raw: Gray | Filtered: <span style="color:var(--bp);">Green</span>)</span></div>
+            <canvas id="fft-canvas"></canvas>
+        </div>
+    </div>
+
+    <div class="controls" style="border-color: var(--primary);">
+        <button id="mic-btn">Start Microphone</button>
+        <div class="control-group divider">
+            <label style="color: var(--text); font-weight:bold;">Mic Vol (%):</label>
+            <input type="number" id="mic-vol-pct" class="ui-num" min="0" max="1000" value="100" style="width: 60px;">
+        </div>
+        <div class="control-group divider" style="font-family: monospace; background: #000; padding: 5px 10px; border-radius: 4px; border: 1px solid #444;">
+            <span style="color:#aaa;">Raw: </span><span id="meter-raw" style="color:var(--danger); width:65px; display:inline-block; text-align:right;">-∞ dB</span>
+            <span style="color:#aaa; margin-left:10px;">Post-%: </span><span id="meter-post" style="color:var(--led-on); width:65px; display:inline-block; text-align:right;">-∞ dB</span>
+        </div>
+    </div>
+
+    <div class="controls" style="border-color: var(--bp);">
+        <div class="control-group">
+            <label style="color: var(--bp); font-weight:bold;">Pre-Scale Bandpass:</label>
+            <input type="checkbox" id="bp-enable" checked> <span style="font-size:0.9em;">Enable</span>
+        </div>
+        <div class="control-group divider">
+            <label>Low Cut (Hz):</label>
+            <input type="number" id="bp-low" class="ui-num" min="20" max="20000" value="300" style="width: 70px;">
+        </div>
+        <div class="control-group divider">
+            <label>High Cut (Hz):</label>
+            <input type="number" id="bp-high" class="ui-num" min="20" max="20000" value="22000" style="width: 70px;">
+        </div>
+    </div>
+
+    <div class="dash-header-row">
+        <h2 style="margin: 0; color: var(--info); font-size: 1.2em;">Engine Dashboard</h2>
+        <div class="dash-header-controls">
+            <div style="display: flex; align-items: center; gap: 5px;">
+                <label style="color: var(--primary); font-weight: bold;">Engines:</label>
+                <input type="number" id="master-engines-count" class="ui-num" min="1" max="20" value="20" style="width: 50px;">
+                <label style="color: var(--primary); font-weight: bold; margin-left: 5px;">Tracks/Engine:</label>
+                <input type="number" id="master-tracks-count" class="ui-num" min="1" max="1000" value="1000" style="width: 60px;">
+                <button id="apply-master-engines-btn" style="background-color: var(--primary); padding: 4px 10px; font-size: 0.85em; color: black;">Apply Base</button>
+            </div>
+            <div class="divider"></div>
+            <div style="display: flex; align-items: center; gap: 5px;">
+                <label style="color: var(--danger); font-weight: bold;">Master Pattern:</label>
+                <select id="master-pattern-select" class="ui-num" style="width: 70px;">
+                    <option value="0">None</option>
+                    <option value="2" selected>2nd</option>
+                    <option value="3">3rd</option>
+                    <option value="4">4th</option>
+                    <option value="5">5th</option>
+                </select>
+                <button id="apply-master-pattern-btn" style="background-color: var(--danger); padding: 4px 10px; font-size: 0.85em; color: white;">Set All</button>
+            </div>
+            <div class="divider"></div>
+            <div style="display: flex; align-items: center; gap: 5px;">
+                <label style="color: var(--info); font-weight: bold;">Master LFO:</label>
+                <input type="number" id="master-lfo-start" class="ui-num" step="0.0001" value="1.0" title="Start Value" style="width: 55px;">
+                <span style="color:#aaa;">/</span>
+                <input type="number" id="master-lfo-end" class="ui-num" step="0.0001" value="0.0001" title="End Value" style="width: 65px;">
+                <label style="margin-left: 5px; color: var(--text);">Time (s):</label>
+                <input type="number" id="master-lfo-time" class="ui-num" min="1" max="600" value="15" title="Time in seconds" style="width: 50px;">
+                <button id="apply-master-lfo-btn" style="background-color: var(--info); padding: 4px 10px; font-size: 0.85em; color: black;">Set All</button>
+            </div>
+            <div class="divider"></div>
+            <button id="master-lfo-btn" style="background-color: var(--info); font-size: 1em; padding: 6px 15px;">▶ Start All LFOs</button>
+        </div>
+    </div>
+
+    <div id="instances-container"></div>
+
+    <div class="controls" style="border-color: var(--aura); margin-top: 10px;">
+        <div class="control-group">
+            <label style="color: var(--aura); font-weight:bold;">AuraConv Comb Filter: </label>
+            <input type="number" id="ac-samples" class="ui-num" min="1" max="10000" value="100" style="width: 60px;">
+            <span style="font-size:0.8em; color:#aaa;">Samples</span>
+            <select id="ac-mode" class="ui-num" style="margin-left: 5px;">
+                <option value="burst">Burst (Allow)</option>
+                <option value="gap">Gap (Block)</option>
+            </select>
+            <input type="checkbox" id="ac-enable" style="margin-left: 5px;"> <span style="font-size:0.9em;">Enable</span>
+        </div>
+        <div class="control-group divider"><input type="checkbox" id="ac-reverb"> <span style="font-size:0.9em; font-weight:bold;">Convolution Reverb</span></div>
+        <div class="control-group divider"><input type="checkbox" id="ac-rotate"> <span style="font-size:0.9em; font-weight:bold;">HRTF 3D Rotation</span></div>
+    </div>
+
+    <div class="controls" style="border-color: var(--warn);">
+        <div class="control-group">
+            <label title="Chops the data feeding into the engines" style="color: var(--warn); font-weight:bold;">Math Gate (ms): </label>
+            <input type="number" id="gate-ms" class="ui-num" min="0.1" max="1000" step="0.1" value="100" style="width: 65px;">
+            <input type="checkbox" id="gate-enable-toggle" checked> <span style="font-size:0.9em;">Enable</span>
+        </div>
+        <div class="control-group divider" style="border: 1px solid var(--primary); padding: 5px 10px; border-radius: 4px;">
+            <label title="Physically chops sound playing from speakers" style="color: var(--warn); font-weight:bold;">Speaker Gate (ms): </label>
+            <input type="number" id="out-gate-ms" class="ui-num" min="0.1" max="1000" step="0.1" value="100" style="width: 65px;">
+            <input type="checkbox" id="out-gate-enable-toggle" checked> <span style="font-size:0.9em;">Enable</span>
+        </div>
+        <div class="control-group divider"><input type="checkbox" id="echo-toggle"><label>Earpiece Mode</label></div>
+        <div class="control-group divider"><input type="checkbox" id="audio-output-toggle" checked><label style="font-weight:bold;">Speaker Out <span style="color:var(--danger); font-size: 0.8em;">(!Feedback)</span></label></div>
+    </div>
+
+    <div class="controls" style="border-color: var(--record);">
+        <button id="record-btn" style="background-color: var(--surface); border: 2px solid var(--record); color: white;">⏺ Start Recording</button>
+        <div class="control-group divider"><label style="color: var(--text);">Auto-Stop (Mins): </label><input type="number" id="record-limit-mins" class="ui-num" min="0.1" max="120" step="0.1" value="5" style="width: 60px;"></div>
+        <div class="control-group divider"><label>Format: </label><select id="record-format" class="ui-num"><option value="wav">WAV (Uncompressed)</option><option value="opus">OPUS (WebM)</option><option value="flac">FLAC (Lossless)</option></select></div>
+        <div id="record-status" style="margin-left: 15px; color: var(--info); font-size: 0.9em; font-weight: bold;"></div>
+    </div>
+
+    <script>
+        const ENGINE_COUNT = 20; 
+
+        // --- 1. WASM-BACKED AUDIOWORKLET INJECTION ---
+        const workletCode = `
+        class MicScalerProcessor extends AudioWorkletProcessor {
+            constructor() {
+                super();
+                this.wasmReady = false;
+                this.exports = null;
+                this.wasmInputView = null;
+                this.wasmOutputView = null;
+
+                // Fetch Wasm binary inside the audio thread for maximum stability
+                fetch('dsp.wasm')
+                    .then(response => response.arrayBuffer())
+                    .then(bytes => WebAssembly.instantiate(bytes))
+                    .then(results => {
+                        this.exports = results.instance.exports;
+                        this.exports.init_sample_rate(sampleRate);
+                        
+                        // Cache Float32Array views to static C memory (Zero allocation DSP!)
+                        const inPtr = this.exports.get_in_buf_ptr();
+                        const outPtr = this.exports.get_out_buf_ptr();
+                        this.wasmInputView = new Float32Array(this.exports.memory.buffer, inPtr, 128);
+                        this.wasmOutputView = new Float32Array(this.exports.memory.buffer, outPtr, 128);
+                        
+                        this.wasmReady = true;
+                        console.log("Wasm DSP Core Loaded & Running!");
+                    })
+                    .catch(err => console.error("Wasm load failed:", err));
+
+                this.port.onmessage = (e) => {
+                    if (!this.wasmReady) return;
+                    if (e.data.type === 'updateEngine') {
+                        this.exports.update_engine(
+                            e.data.index, e.data.active ? 1 : 0, e.data.tracks, e.data.patternN, 
+                            e.data.lfoActive ? 1 : 0, e.data.lfoStart, e.data.lfoEnd, e.data.lfoTime
+                        );
+                    } else if (e.data.type === 'gateConfig') {
+                        this.exports.set_gate_config(e.data.enabled ? 1 : 0, e.data.samples);
+                    } else if (e.data.type === 'acConfig') {
+                        this.exports.set_ac_config(e.data.enabled ? 1 : 0, e.data.burst ? 1 : 0, e.data.samples);
+                    }
+                };
+            }
+
+            process(inputs, outputs) {
+                if (!this.wasmReady) return true;
+                const input = inputs[0][0];
+                const output = outputs[0][0];
+                if (!input) return true;
+
+                const numFrames = input.length;
+
+                // 1. Write JS Audio -> Wasm Static Memory
+                this.wasmInputView.set(input);
+
+                // 2. Execute C DSP Loop (2.5 Million ops happen here instantly)
+                this.exports.process_audio_block(numFrames);
+
+                // 3. Write Wasm Static Memory -> JS Audio Output
+                output.set(this.wasmOutputView);
+
+                return true;
+            }
+        }
+        registerProcessor('micscaler-processor', MicScalerProcessor);
+        `;
+        const workletBlob = new Blob([workletCode], { type: 'application/javascript' });
+        const workletUrl = URL.createObjectURL(workletBlob);
+
+        // --- GLOBAL VARIABLES ---
+        let audioContext, microphone, stream;
+        let isRunning = false, animationId;
+        let liveMathNode, fxHubIn, fxHubOut, convolver, panner, outputGain, chopperOsc, chopperGain; 
+        let outAnalyser, outDataArray;
+        let hpFilter, lpFilter, rawAnalyser, postGainAnalyser, filteredAnalyser;
+        let rawFreqData, filteredFreqData, rawTimeData, postTimeData;
+        let micBypassGain, filteredGain, preGainNode;
+        let isRecording = false, mediaRecorder = null, recordedChunks =[], recordStartTime = 0, recordLimitSecs = 300;
+        let scriptProcessor = null, wavAudioBuffer =[]; 
+        let lastMeterUpdate = 0; 
+
+        const micBtn = document.getElementById('mic-btn');
+        const audioOutputToggle = document.getElementById('audio-output-toggle');
+        const echoToggle = document.getElementById('echo-toggle');
+        const masterCanvas = document.getElementById('master-canvas');
+        const masterCtx = masterCanvas.getContext('2d', { alpha: false });
+        const fftCanvas = document.getElementById('fft-canvas');
+        const fftCtx = fftCanvas.getContext('2d', { alpha: false });
+        let inToggleEnabled = true; 
+
+        document.getElementById('mic-vol-pct').addEventListener('input', (e) => {
+            if(preGainNode && audioContext) {
+                const pct = Math.max(0, parseFloat(e.target.value) || 0);
+                preGainNode.gain.setTargetAtTime(pct / 100.0, audioContext.currentTime, 0.05);
+            }
+        });
+
+        function updateBandpass() {
+            if (!audioContext || !hpFilter || !lpFilter) return;
+            const enabled = document.getElementById('bp-enable').checked;
+            const low = parseFloat(document.getElementById('bp-low').value) || 300;
+            const high = parseFloat(document.getElementById('bp-high').value) || 22000;
+            hpFilter.frequency.setTargetAtTime(low, audioContext.currentTime, 0.05);
+            lpFilter.frequency.setTargetAtTime(high, audioContext.currentTime, 0.05);
+            micBypassGain.gain.setTargetAtTime(enabled ? 0 : 1, audioContext.currentTime, 0.05);
+            filteredGain.gain.setTargetAtTime(enabled ? 1 : 0, audioContext.currentTime, 0.05);
+        }
+        ['bp-enable', 'bp-low', 'bp-high'].forEach(id => {
+            document.getElementById(id).addEventListener('change', updateBandpass);
+            document.getElementById(id).addEventListener('input', updateBandpass);
+        });
+
+        const instancesContainer = document.getElementById('instances-container');
+        for(let i=0; i<ENGINE_COUNT; i++) {
+            const defaultTime = i === 0 ? 5 : (i === 1 ? 30 : (i === 2 ? 60 : 10 + (i * 5)));
+            instancesContainer.innerHTML += `
+            <div class="instance-card active-card" id="card-${i}">
+                <div class="instance-header"><span>Engine ${i + 1}</span>
+                    <div style="display:flex; align-items:center; gap:10px;">
+                        <input type="checkbox" id="eng-active-${i}" checked> Enable
+                        <div id="led-${i}" class="led-indicator"></div>
+                    </div>
+                </div>
+                <div class="instance-row"><label>Tracks:</label><input type="number" id="eng-tracks-${i}" class="ui-num" min="1" max="1000" value="1000" style="width: 50px;"></div>
+                <div class="instance-row"><label style="color:var(--danger);">Pattern:</label>
+                    <select id="eng-pat-${i}" class="ui-num" style="width: 60px;">
+                        <option value="0">None</option><option value="2" selected>2nd</option><option value="3">3rd</option><option value="4">4th</option><option value="5">5th</option>
+                    </select>
+                </div>
+                <div class="instance-row" style="color: var(--info); font-weight:bold; margin-top:5px;">Auto-Step LFO</div>
+                <div class="instance-row"><label>Start/End:</label>
+                    <div>
+                        <input type="number" id="eng-start-${i}" class="ui-num" step="0.0001" value="1.0" style="width: 55px;">
+                        <input type="number" id="eng-end-${i}" class="ui-num" step="0.0001" value="0.0001" style="width: 65px;">
+                    </div>
+                </div>
+                <div class="instance-row"><label>Time (s):</label><input type="number" id="eng-time-${i}" class="ui-num" min="1" max="600" value="${defaultTime}" style="width: 50px;"></div>
+                <div class="instance-row" style="margin-top: 5px;">
+                    <button id="eng-lfo-btn-${i}" style="background:var(--info); width:60px; padding: 4px;">Start</button>
+                    <div style="display:flex; flex-direction:column; align-items:flex-end;">
+                        <div id="eng-readout-${i}" class="readout">0.0001</div>
+                    </div>
+                </div>
+            </div>`;
+        }
+
+        let engineLfoStates = Array(ENGINE_COUNT).fill(false);
+        const masterLfoBtn = document.getElementById('master-lfo-btn');
+        let masterLfoRunning = false;
+
+        document.getElementById('apply-master-engines-btn').addEventListener('click', () => {
+            const engCount = Math.max(1, Math.min(20, parseInt(document.getElementById('master-engines-count').value) || 20));
+            const trkCount = Math.max(1, Math.min(1000, parseInt(document.getElementById('master-tracks-count').value) || 1000));
+            for (let i = 0; i < ENGINE_COUNT; i++) {
+                const card = document.getElementById(`card-${i}`);
+                const activeCheckbox = document.getElementById(`eng-active-${i}`);
+                const tracksInput = document.getElementById(`eng-tracks-${i}`);
+                if (i < engCount) {
+                    card.style.display = 'flex';
+                    activeCheckbox.checked = true;
+                    tracksInput.value = trkCount;
+                } else {
+                    card.style.display = 'none';
+                    activeCheckbox.checked = false;
+                }
+                sendEngineConfig(i); 
+            }
+        });
+
+        document.getElementById('apply-master-pattern-btn').addEventListener('click', () => {
+            const masterPat = document.getElementById('master-pattern-select').value;
+            for (let i = 0; i < ENGINE_COUNT; i++) {
+                const patSelect = document.getElementById(`eng-pat-${i}`);
+                if (patSelect) { patSelect.value = masterPat; sendEngineConfig(i); }
+            }
+        });
+
+        document.getElementById('apply-master-lfo-btn').addEventListener('click', () => {
+            const mStart = document.getElementById('master-lfo-start').value;
+            const mEnd = document.getElementById('master-lfo-end').value;
+            const mTime = document.getElementById('master-lfo-time').value;
+            for (let i = 0; i < ENGINE_COUNT; i++) {
+                const startInput = document.getElementById(`eng-start-${i}`);
+                const endInput = document.getElementById(`eng-end-${i}`);
+                const timeInput = document.getElementById(`eng-time-${i}`);
+                if (startInput) startInput.value = mStart;
+                if (endInput) endInput.value = mEnd;
+                if (timeInput) timeInput.value = mTime;
+                sendEngineConfig(i);
+            }
+        });
+
+        function checkMasterLfoState() {
+            const anyRunning = engineLfoStates.some(state => state);
+            masterLfoRunning = anyRunning;
+            masterLfoBtn.innerText = masterLfoRunning ? '⏹ Stop All LFOs' : '▶ Start All LFOs';
+            masterLfoBtn.style.backgroundColor = masterLfoRunning ? 'var(--danger)' : 'var(--info)';
+        }
+
+        masterLfoBtn.addEventListener('click', () => {
+            if(!liveMathNode) { alert("Start Microphone First!"); return; }
+            masterLfoRunning = !masterLfoRunning;
+            masterLfoBtn.innerText = masterLfoRunning ? '⏹ Stop All LFOs' : '▶ Start All LFOs';
+            masterLfoBtn.style.backgroundColor = masterLfoRunning ? 'var(--danger)' : 'var(--info)';
+            for (let i = 0; i < ENGINE_COUNT; i++) {
+                engineLfoStates[i] = masterLfoRunning;
+                const btn = document.getElementById(`eng-lfo-btn-${i}`);
+                if(btn) { btn.innerText = masterLfoRunning ? 'Stop' : 'Start'; btn.style.background = masterLfoRunning ? 'var(--danger)' : 'var(--info)'; }
+                sendEngineConfig(i);
+            }
+        });
+
+        function sendEngineConfig(idx) {
+            if(!liveMathNode) return;
+            const config = {
+                active: document.getElementById(`eng-active-${idx}`).checked,
+                tracks: parseInt(document.getElementById(`eng-tracks-${idx}`).value) || 1000,
+                patternN: parseInt(document.getElementById(`eng-pat-${idx}`).value) || 0,
+                lfoActive: engineLfoStates[idx],
+                lfoStart: parseFloat(document.getElementById(`eng-start-${idx}`).value) || 1.0,
+                lfoEnd: parseFloat(document.getElementById(`eng-end-${idx}`).value) || 0.0001,
+                lfoTime: parseFloat(document.getElementById(`eng-time-${idx}`).value) || 15
+            };
+            liveMathNode.port.postMessage({ type: 'updateEngine', index: idx, ...config });
+            const card = document.getElementById(`card-${idx}`);
+            const led = document.getElementById(`led-${idx}`);
+            if(config.active) { card.classList.add('active-card'); if(isRunning) led.classList.add('on'); } 
+            else { card.classList.remove('active-card'); led.classList.remove('on'); }
+        }
+
+        for(let i=0; i<ENGINE_COUNT; i++) {['eng-active-', 'eng-tracks-', 'eng-pat-', 'eng-start-', 'eng-end-', 'eng-time-'].forEach(prefix => {
+                document.getElementById(prefix + i).addEventListener('input', () => sendEngineConfig(i));
+                document.getElementById(prefix + i).addEventListener('change', () => sendEngineConfig(i));
+            });
+            document.getElementById(`eng-lfo-btn-${i}`).addEventListener('click', (e) => {
+                if(!liveMathNode) { alert("Start Microphone First!"); return; }
+                engineLfoStates[i] = !engineLfoStates[i];
+                e.target.innerText = engineLfoStates[i] ? 'Stop' : 'Start';
+                e.target.style.background = engineLfoStates[i] ? 'var(--danger)' : 'var(--info)';
+                sendEngineConfig(i);
+                checkMasterLfoState();
+            });
+        }
+
+        function updateGlobalWorklet() {
+            if (!liveMathNode) return;
+            inToggleEnabled = document.getElementById('gate-enable-toggle').checked;
+            const inGateSamples = (parseFloat(document.getElementById('gate-ms').value) || 100) / 1000 * audioContext.sampleRate;
+            liveMathNode.port.postMessage({ type: 'gateConfig', enabled: inToggleEnabled, samples: inGateSamples });
+            liveMathNode.port.postMessage({
+                type: 'acConfig',
+                enabled: document.getElementById('ac-enable').checked,
+                burst: document.getElementById('ac-mode').value === 'burst',
+                samples: parseInt(document.getElementById('ac-samples').value) || 100
+            });
+        }
+        ['gate-enable-toggle', 'gate-ms', 'ac-enable', 'ac-mode', 'ac-samples'].forEach(id => {
+            document.getElementById(id).addEventListener('change', updateGlobalWorklet);
+            document.getElementById(id).addEventListener('input', updateGlobalWorklet);
+        });
+
+        const outGateToggleBtn = document.getElementById('out-gate-enable-toggle');
+        const outGateMsInput = document.getElementById('out-gate-ms');
+        function updateOutputGate() {
+            if (!audioContext || !outputGain || !chopperOsc) return;
+            const enabled = outGateToggleBtn.checked;
+            const ms = Math.max(0.1, parseFloat(outGateMsInput.value) || 100);
+            const freq = 1000 / (2 * ms); 
+            if (enabled) {
+                outputGain.gain.value = 0.5; 
+                chopperOsc.frequency.setValueAtTime(freq, audioContext.currentTime);
+                try { chopperGain.connect(outputGain.gain); } catch(e){}
+            } else {
+                try { chopperGain.disconnect(outputGain.gain); } catch(e){}
+                outputGain.gain.value = 1.0; 
+            }
+        }
+        outGateToggleBtn.addEventListener('change', updateOutputGate);
+        outGateMsInput.addEventListener('input', updateOutputGate);
+
+        document.getElementById('ac-reverb').addEventListener('change', updateFXRouting);
+        document.getElementById('ac-rotate').addEventListener('change', updateFXRouting);
+        audioOutputToggle.addEventListener('change', (e) => {
+            if (!isRunning || !outputGain || !audioContext) return;
+            e.target.checked ? outputGain.connect(audioContext.destination) : outputGain.disconnect(audioContext.destination);
+        });
+        echoToggle.addEventListener('change', () => { if (isRunning) { toggleMic(); setTimeout(toggleMic, 200); }});
+
+        function generateImpulseResponse(ctx) {
+            const length = ctx.sampleRate * 2.0; 
+            const impulse = ctx.createBuffer(2, length, ctx.sampleRate);
+            for (let c = 0; c < 2; c++) {
+                const channelData = impulse.getChannelData(c);
+                for (let i = 0; i < length; i++) channelData[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / length, 3);
+            }
+            return impulse;
+        }
+
+        function updateFXRouting() {
+            if (!audioContext) return;
+            try { fxHubIn.disconnect(); } catch(e){}
+            try { convolver.disconnect(); } catch(e){}
+            try { panner.disconnect(); } catch(e){}
+            let currentOut = fxHubIn;
+            if (document.getElementById('ac-reverb').checked) { currentOut.connect(convolver); currentOut = convolver; }
+            if (document.getElementById('ac-rotate').checked) { currentOut.connect(panner); currentOut = panner; }
+            currentOut.connect(fxHubOut);
+        }
+
+        async function toggleMic() {
+            if (isRunning) {
+                if (isRecording) stopRecording();
+                cancelAnimationFrame(animationId);
+                if (stream) stream.getTracks().forEach(track => track.stop());
+                if (audioContext) audioContext.close();
+                micBtn.innerText = 'Start Microphone';
+                micBtn.classList.remove('active');
+                isRunning = false;
+                for(let i=0; i<ENGINE_COUNT; i++) document.getElementById(`led-${i}`).classList.remove('on'); 
+                masterLfoRunning = false;
+                engineLfoStates.fill(false);
+                masterLfoBtn.innerText = '▶ Start All LFOs';
+                masterLfoBtn.style.backgroundColor = 'var(--info)';
+                for (let i = 0; i < ENGINE_COUNT; i++) {
+                    const btn = document.getElementById(`eng-lfo-btn-${i}`);
+                    if(btn) { btn.innerText = 'Start'; btn.style.background = 'var(--info)'; }
+                }
+                return;
+            }
+
+            try {
+                const useEcho = echoToggle.checked;
+                stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: useEcho, noiseSuppression: useEcho, autoGainControl: useEcho } });
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                await audioContext.audioWorklet.addModule(workletUrl);
+                
+                microphone = audioContext.createMediaStreamSource(stream);
+                preGainNode = audioContext.createGain();
+                const initVol = parseFloat(document.getElementById('mic-vol-pct').value) || 100;
+                preGainNode.gain.value = initVol / 100.0;
+
+                rawAnalyser = audioContext.createAnalyser(); rawAnalyser.fftSize = 2048;
+                postGainAnalyser = audioContext.createAnalyser(); postGainAnalyser.fftSize = 2048;
+
+                hpFilter = audioContext.createBiquadFilter(); hpFilter.type = 'highpass';
+                lpFilter = audioContext.createBiquadFilter(); lpFilter.type = 'lowpass';
+                filteredAnalyser = audioContext.createAnalyser(); filteredAnalyser.fftSize = 2048;
+                
+                rawFreqData = new Uint8Array(rawAnalyser.frequencyBinCount);
+                filteredFreqData = new Uint8Array(filteredAnalyser.frequencyBinCount);
+                rawTimeData = new Float32Array(rawAnalyser.frequencyBinCount);
+                postTimeData = new Float32Array(postGainAnalyser.frequencyBinCount);
+
+                micBypassGain = audioContext.createGain(); micBypassGain.gain.value = 1;
+                filteredGain = audioContext.createGain(); filteredGain.gain.value = 0;
+
+                microphone.connect(rawAnalyser);
+                microphone.connect(preGainNode);
+                preGainNode.connect(postGainAnalyser);
+                preGainNode.connect(hpFilter); hpFilter.connect(lpFilter); lpFilter.connect(filteredAnalyser);
+                preGainNode.connect(micBypassGain);
+                lpFilter.connect(filteredGain);
+
+                // Wasm Worklet Node (No processorOptions needed, worklet fetches it)
+                liveMathNode = new AudioWorkletNode(audioContext, 'micscaler-processor');
+
+                updateBandpass();
+                updateGlobalWorklet();
+                for(let i=0; i<ENGINE_COUNT; i++) sendEngineConfig(i); 
+                document.getElementById('apply-master-engines-btn').click();
+
+                outAnalyser = audioContext.createAnalyser(); outAnalyser.fftSize = 1024;
+                outDataArray = new Float32Array(outAnalyser.frequencyBinCount);
+
+                fxHubIn = audioContext.createGain(); fxHubOut = audioContext.createGain();
+                outputGain = audioContext.createGain(); outputGain.gain.value = 1.0;
+
+                convolver = audioContext.createConvolver(); convolver.buffer = generateImpulseResponse(audioContext);
+                panner = audioContext.createPanner(); panner.panningModel = 'HRTF';
+                
+                chopperOsc = audioContext.createOscillator(); chopperOsc.type = 'square';
+                chopperGain = audioContext.createGain(); chopperGain.gain.value = 0.5; 
+                chopperOsc.connect(chopperGain); chopperOsc.start();
+
+                micBypassGain.connect(liveMathNode);
+                filteredGain.connect(liveMathNode);
+                liveMathNode.connect(outAnalyser);
+                outAnalyser.connect(fxHubIn);
+                updateFXRouting();
+                fxHubOut.connect(outputGain);
+                
+                if (audioOutputToggle.checked) outputGain.connect(audioContext.destination);
+                updateOutputGate();
+
+                micBtn.innerText = 'Stop Microphone';
+                micBtn.classList.add('active');
+                isRunning = true;
+                lastMeterUpdate = performance.now();
+                
+                for(let i=0; i<ENGINE_COUNT; i++) { if(document.getElementById(`eng-active-${i}`).checked && document.getElementById(`card-${i}`).style.display !== 'none') document.getElementById(`led-${i}`).classList.add('on'); }
+
+                masterCanvas.width = masterCanvas.clientWidth; masterCanvas.height = masterCanvas.clientHeight;
+                fftCanvas.width = fftCanvas.clientWidth; fftCanvas.height = fftCanvas.clientHeight;
+                
+                processVisualizer();
+            } catch (err) { alert('Error accessing microphone or loading Wasm: ' + err); }
+        }
+
+        const recordBtn = document.getElementById('record-btn');
+        const recordLimitInput = document.getElementById('record-limit-mins');
+        const recordFormatInput = document.getElementById('record-format');
+        const recordStatus = document.getElementById('record-status');
+
+        recordBtn.addEventListener('click', () => {
+            if (!isRunning) { alert("Please Start Microphone first!"); return; }
+            if (isRecording) stopRecording(); else startRecording();
+        });
+
+        function startRecording() {
+            recordLimitSecs = (parseFloat(recordLimitInput.value) || 5) * 60;
+            isRecording = true; recordStartTime = audioContext.currentTime; 
+            recordBtn.innerText = '⏹ Stop Recording'; recordBtn.classList.add('record-active');
+            recordStatus.innerText = `Recording (${(recordLimitSecs/60).toFixed(1)}m limit)...`;
+
+            const dest = audioContext.createMediaStreamDestination();
+            outputGain.connect(dest);
+
+            if (recordFormatInput.value === 'wav') {
+                wavAudioBuffer =[];
+                scriptProcessor = audioContext.createScriptProcessor(4096, 1, 1);
+                dest.connect(scriptProcessor); scriptProcessor.connect(audioContext.destination); 
+                scriptProcessor.onaudioprocess = (e) => {
+                    if (!isRecording) return;
+                    wavAudioBuffer.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+                    if (audioContext.currentTime - recordStartTime >= recordLimitSecs) stopRecording();
+                };
+            } else {
+                let mimeType = recordFormatInput.value === 'flac' ? 'audio/flac' : 'audio/webm;codecs=opus';
+                if (!MediaRecorder.isTypeSupported(mimeType)) { mimeType = 'audio/webm;codecs=opus'; recordFormatInput.value = 'opus'; }
+                recordedChunks =[];
+                mediaRecorder = new MediaRecorder(dest.stream, { mimeType: mimeType });
+                mediaRecorder.ondataavailable = e => { 
+                    if (e.data.size > 0) recordedChunks.push(e.data); 
+                    if (isRecording && (audioContext.currentTime - recordStartTime >= recordLimitSecs)) stopRecording();
+                };
+                mediaRecorder.onstop = () => { triggerDownload(new Blob(recordedChunks, { type: mimeType }), `MicScaler_Output.${mimeType.includes('flac') ? 'flac' : 'webm'}`); };
+                mediaRecorder.start(100); 
+            }
+        }
+
+        function stopRecording() {
+            isRecording = false; recordBtn.innerText = '⏺ Start Recording'; recordBtn.classList.remove('record-active');
+            recordStatus.innerText = 'Compiling audio file...';
+            if (recordFormatInput.value === 'wav' && scriptProcessor) {
+                scriptProcessor.disconnect(); setTimeout(compileWAVFile, 50);
+            } else if (mediaRecorder && mediaRecorder.state !== "inactive") { mediaRecorder.stop(); }
+        }
+
+        function compileWAVFile() {
+            const totalLength = wavAudioBuffer.reduce((acc, arr) => acc + arr.length, 0);
+            const flattened = new Float32Array(totalLength);
+            let offset = 0;
+            for (let arr of wavAudioBuffer) { flattened.set(arr, offset); offset += arr.length; }
+            const sr = audioContext.sampleRate; const buffer = new ArrayBuffer(44 + flattened.length * 2); const view = new DataView(buffer);
+            const writeStr = (v, off, str) => { for (let i=0; i<str.length; i++) v.setUint8(off + i, str.charCodeAt(i)); };
+            writeStr(view, 0, 'RIFF'); view.setUint32(4, 36 + flattened.length * 2, true); writeStr(view, 8, 'WAVE'); writeStr(view, 12, 'fmt ');
+            view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true); view.setUint32(24, sr, true); view.setUint32(28, sr * 2, true);
+            view.setUint16(32, 2, true); view.setUint16(34, 16, true); writeStr(view, 36, 'data'); view.setUint32(40, flattened.length * 2, true);
+            for (let i = 0, pcmOffset = 44; i < flattened.length; i++, pcmOffset += 2) {
+                let s = Math.max(-1, Math.min(1, flattened[i])); view.setInt16(pcmOffset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+            }
+            triggerDownload(new Blob([view], { type: 'audio/wav' }), 'MicScaler_Output.wav');
+        }
+
+        function triggerDownload(blob, filename) {
+            const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.style.display = 'none'; a.href = url; a.download = filename;
+            document.body.appendChild(a); a.click();
+            setTimeout(() => { document.body.removeChild(a); window.URL.revokeObjectURL(url); recordStatus.innerText = "Saved successfully!"; }, 100);
+        }
+
+        const getDB = (arr) => {
+            let sum = 0; for(let i=0; i<arr.length; i++) sum += arr[i]*arr[i];
+            let rms = Math.sqrt(sum / arr.length);
+            return rms < 0.0001 ? -100 : 20 * Math.log10(rms);
+        };
+
+        function processVisualizer(timestamp) {
+            if (!isRunning) return;
+            animationId = requestAnimationFrame(processVisualizer);
+            if (document.getElementById('ac-rotate').checked && panner) {
+                const t = audioContext.currentTime;
+                panner.positionX.setValueAtTime(Math.sin(t * 2.0) * 2, t);
+                panner.positionZ.setValueAtTime(Math.cos(t * 2.0) * 2, t);
+            }
+            if (timestamp - lastMeterUpdate > 100) {
+                rawAnalyser.getFloatTimeDomainData(rawTimeData);
+                postGainAnalyser.getFloatTimeDomainData(postTimeData);
+                document.getElementById('meter-raw').innerText = getDB(rawTimeData).toFixed(1) + ' dB';
+                document.getElementById('meter-post').innerText = getDB(postTimeData).toFixed(1) + ' dB';
+                lastMeterUpdate = timestamp;
+            }
+            outAnalyser.getFloatTimeDomainData(outDataArray);
+            const dataLength = outDataArray.length;
+            masterCtx.fillStyle = '#000000'; masterCtx.fillRect(0, 0, masterCanvas.width, masterCanvas.height);
+            masterCtx.lineWidth = 2; masterCtx.strokeStyle = '#bb86fc'; masterCtx.beginPath();
+            const sliceWidth = masterCanvas.width / dataLength; const heightHalf = masterCanvas.height / 2;
+            let x = 0;
+            for (let i = 0; i < dataLength; i++) {
+                const y = (outDataArray[i] * heightHalf) + heightHalf;
+                i === 0 ? masterCtx.moveTo(x, y) : masterCtx.lineTo(x, y); x += sliceWidth;
+            }
+            masterCtx.stroke();
+            rawAnalyser.getByteFrequencyData(rawFreqData);
+            filteredAnalyser.getByteFrequencyData(filteredFreqData);
+            fftCtx.fillStyle = '#000000'; fftCtx.fillRect(0, 0, fftCanvas.width, fftCanvas.height);
+            const fftLen = rawAnalyser.frequencyBinCount; const fWidth = fftCanvas.width / fftLen;
+            fftCtx.beginPath(); fftCtx.moveTo(0, fftCanvas.height);
+            for(let i = 0; i < fftLen; i++) {
+                const v = rawFreqData[i] / 255.0;
+                fftCtx.lineTo(i * fWidth, fftCanvas.height - (v * fftCanvas.height));
+            }
+            fftCtx.lineTo(fftCanvas.width, fftCanvas.height);
+            fftCtx.fillStyle = 'rgba(255, 255, 255, 0.2)'; fftCtx.fill();
+            fftCtx.beginPath();
+            for(let i = 0; i < fftLen; i++) {
+                const v = filteredFreqData[i] / 255.0;
+                const y = fftCanvas.height - (v * fftCanvas.height);
+                i === 0 ? fftCtx.moveTo(i * fWidth, y) : fftCtx.lineTo(i * fWidth, y);
+            }
+            fftCtx.strokeStyle = 'var(--bp)'; fftCtx.lineWidth = 2; fftCtx.stroke();
+        }
+
+        document.getElementById('mic-btn').addEventListener('click', toggleMic);
+        document.getElementById('apply-master-engines-btn').click();
+    </script>
+</body>
+  </html>
